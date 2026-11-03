@@ -19,6 +19,7 @@ int     load_zmagic_binary(struct ARMul_State *state, char *filename,
 #define RX_MAP_DATA_ADDR        (0x01800000-RX_MAP_DATA_LEN)
 
 #define MAX_SHARED_LIBS 4
+#define RIX_ARG_MAX     24576  /* RISCiX NCARGS, including pointer tables */
 
 /* These structures & values mirror those documented in RISCiX's
  * /usr/include/sys/exec.h

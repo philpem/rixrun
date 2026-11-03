@@ -97,7 +97,7 @@ int     main(int argc, char *argv[])
         state->verbose = (verbose == 2);
         state->bigendSig = LOW;
         ARMul_CoProInit(state);
-        os_init(state, realpath(argv[0], NULL), verbose);
+        os_init(state, verbose);
 
         if (verbose)
                 printf(".  Done.\n\n");

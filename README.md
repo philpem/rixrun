@@ -5,7 +5,7 @@ v0.1 19 Feb 2022
 
 Run Acorn RISCiX binaries from the comfort of your own laptop!
 This program is a simple userspace instruction/syscall emulator that
-can run _unsqueezed_ RISCiX SPZMAGIC binaries.
+can run _unsqueezed_ RISCiX ZMAGIC and SPZMAGIC binaries.
 
 It uses ARMulator to run arm26 code, and with some shockingly-simple
 SWI syscall emulation it's able to run some basic programs.
@@ -43,35 +43,59 @@ Main options:
 -w<options>    Disable all or selected warning and error messages
 ```
 
-This tool can compile and link a simple helloworld.c into a working binary.  Note due to the current vfork/execve limitation (below) you can't use the `cc foo.c -o some_binary` syntax, but instead need to invoke `ld` manually.  For example:
+This tool can compile and link a simple helloworld.c into a working binary.
+C345's automatic link step runs the guest shell and linker. Prepare unsqueezed
+copies of `usr/lib/cc`, `usr/bin/sh`, `sbin/sh` and `usr/bin/ld` beneath
+`RIX_ROOT`, then compile from your working directory:
 
 ```
-$ cd $RIX_ROOT
-$ rixrun usr/lib/cc -Iusr/include -c hellow.c
-$ rixrun usr/bin/ld hellow.o usr/lib/crt0.o -Lusr/lib -lc -o hellow
-$ rixrun ./hellow
+$ rixrun "$RIX_ROOT/usr/lib/cc" hello.c -o hello
+$ rixrun ./hello
 Hello world!
 ```
+
+Headers and libraries use the installation beneath `RIX_ROOT`; source and
+output files use the working directory. The BSD/X/Open frontend options also
+need an unsqueezed `usr/bin/symrename`.
 
 ## Limitations
 
 Many!  Only a handful of very simple syscalls are implemented so far:
 
-   * IOCTL is all fake, no fancy terminal use will work
+   * Terminal ioctls are unsupported and return `ENOTTY`; interactive terminal use is unsupported
    * No networking
-   * No form of fork/vfork/execve
+   * Guest signal handlers and job control are not implemented
+   * Only unsqueezed ZMAGIC and SPZMAGIC executables are supported, including after exec
 
-`cc` will try to vfork/execve `ld`, which will dump an error message (with attempted args).
-Build flows that use `cc -c` plus `ld` don't do this, and will work.
+Experimental `fork`, `vfork`, `execve` and wait support uses one host process
+per guest. `vfork` provides fork semantics, with private child memory and no
+parent suspension. Failed exec leaves the caller intact; successful exec
+preserves the guest PID, children and open descriptors.
+
+Guest PIDs are positive 16-bit IDs local to a process and its direct children.
+They do not provide a global PID namespace. Wait supports a particular child,
+any child and the current host process group, with `WNOHANG` and `WUNTRACED`.
+Resource usage is still reported as zero.
+
+See [the process implementation notes](docs/fork-experimental.md) for the plan,
+ABI details, corner cases and validation. Run `make check` for self-contained
+ARM26 process tests; no RISCiX installation is needed.
 
 
 ## Usage
 
 ### Environment variables
 
-`RIX_ROOT` indicates the host path to a RISCiX installation, and is used to locate shared libraries.
+`RIX_ROOT` indicates the host path to a RISCiX installation. It locates shared
+libraries and prefixes absolute filenames passed to guest `execve`, so that
+`/usr/bin/ld` executes `$RIX_ROOT/usr/bin/ld`. Those executables must be
+unsqueezed and have execute permission; host executables are not run as a fallback.
 
-All other paths (e.g. from command-line args) are used verbatim, without any 'chrooting' applied.
+Guest file operations resolve paths beneath `/usr/lib` and `/usr/include`
+inside `RIX_ROOT` too. This includes the compiler's default headers, startup
+object, libraries and symbol-renaming tables. Other file paths, relative exec
+filenames and the initial command-line filename use host paths. This is not a
+chroot.
 
 `RIX_VERBOSE` can be set to `1` or `2` for increasing debug output:  syscall
 trace and instruction execution trace.
@@ -86,8 +110,9 @@ so the current ZMAGIC loader can only load unsqueezed binaries.
 As a workaround, this tool can execute an already-unsqueezed `unsqueeze` binary, in order to
 prepare any given binary for execution.  Solve the chicken & egg by unsqueezing `unsqueeze` from RISCiX itself.
 
-Note: `unsqueeze` writes to a temporary file and then attempts to execute `cp` to move the output
-for some reason (which isn't supported).  The output needs to be manually copied to the right place.
+`unsqueeze` writes to a temporary file and then invokes a guest shell and `cp`
+to move the output. Its final copy step needs a runnable guest `cp`. If that
+step fails, copy the temporary output to the right place manually.
 
 
 # Licence

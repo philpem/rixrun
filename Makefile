@@ -36,8 +36,13 @@ INCLUDES = -Iarmulator/
 
 all:	rixrun
 
-rixrun:	$(SOURCES)
+rixrun:	$(SOURCES) $(wildcard *.h armulator/*.h)
 	$(CC) $(CFLAGS) $(INCLUDES) $(SOURCES) -o $@
+
+check:	rixrun
+	python3 tests/process.py ./rixrun
+
+.PHONY: all check clean
 
 clean:
 	rm -f rixrun *~

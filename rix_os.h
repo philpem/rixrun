@@ -4,7 +4,7 @@
 #include <inttypes.h>
 #include "armdefs.h"
 
-void    os_init(ARMul_State *state, char *me_realpath, int verbose);
+void    os_init(ARMul_State *state, int verbose);
 
 /* RISCiX syscall interface structures/definitions */
 

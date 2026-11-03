@@ -66,7 +66,7 @@ static void     memcpy_to_target(addr_t dest, void *src, unsigned int len)
 {
         void *realdest = (void *)mem_base + (uintptr_t)dest;
 
-        if ((uintptr_t)(dest + len) < MEM_SIZE) {
+        if (dest <= MEM_SIZE && len <= MEM_SIZE - dest) {
                 memcpy(realdest, src, len);
         }
 }
@@ -87,14 +87,21 @@ static uintptr_t copy_strings(addr_t p, unsigned int n, char **s)
 static int      target_pread(int fd, addr_t ptr, unsigned int len,
                         unsigned int offset)
 {
-        if ((ptr + len) > MEM_SIZE) {
+        if (ptr > MEM_SIZE || len > MEM_SIZE - ptr) {
                 return -EFAULT;
         }
-        int r = pread(fd, mem_base + (uintptr_t)ptr, len, offset);
-        if (r < 0) {
-                return -errno;
-        };
-        return r;
+        unsigned int done = 0;
+        while (done < len) {
+                ssize_t r = pread(fd, mem_base + ptr + done, len - done,
+                                  (off_t)offset + done);
+                if (r < 0) {
+                        if (errno == EINTR) continue;
+                        return -errno;
+                }
+                if (r == 0) return -ENOEXEC;
+                done += r;
+        }
+        return 0;
 }
 
 static unsigned int     target_strlen(addr_t ptr)
@@ -171,29 +178,36 @@ static int get_hdr(char *path, char *newpath, struct exec_hdr *hdr, int rel_path
                 rootpath = "";
         }
         if (rel_path) {
-                snprintf(newpath, PATH_MAX, "%s/%s", rootpath, path);
+                if (snprintf(newpath, PATH_MAX, "%s/%s", rootpath, path) >= PATH_MAX)
+                        return -ENAMETOOLONG;
                 fd = open(newpath, O_RDONLY);
         } else {
                 fd = open(path, O_RDONLY);
         }
 
         if (fd < 0) {
-                return fd;
+                return -errno;
         }
 
-        int r = read(fd, hdr, sizeof(struct exec_hdr));
+        int r;
+        do {
+                r = pread(fd, hdr, sizeof(*hdr), 0);
+        } while (r < 0 && errno == EINTR);
 
         if (r < 0) {
-                perror("Can't read lib header");
+                r = -errno;
                 goto err;
-        } else if (r < sizeof(struct exec_hdr)) {
+        } else if ((size_t)r < sizeof(struct exec_hdr)) {
                 DBG_ZM("BINFMT_ZMAGIC: Header read too short, %d vs %zu",
                        r, sizeof(struct exec_hdr));
-                r = -1;
+                r = -ENOEXEC;
                 goto err;
         }
 
         r = 0;
+        if ((hdr->a_exec.a_magic & MF_USES_SL) &&
+            !memchr(hdr->a_shlibname, 0, sizeof(hdr->a_shlibname)))
+                r = -ENOEXEC;
 err:
         close(fd);
         return r;
@@ -201,10 +215,8 @@ err:
 
 static int load_zm_file(struct exec_hdr *hdr,
                         int fd, char *filename,
-                        uint32_t *entrypoint)
+                        addr_t *current_tseg_base, uint32_t *entrypoint)
 {
-        static addr_t   current_tseg_base = RX_MAP_START_ADDR;
-
         addr_t textpos = 0, datapos = 0;
         int result;
         addr_t text_len, data_len, bss_len, entry_addr;
@@ -219,22 +231,29 @@ static int load_zm_file(struct exec_hdr *hdr,
 
         DBG_ZM("BINFMT_ZMAGIC: Loading file: %s\n", filename);
 
-        if (magic != SPZMAGIC && magic != SLZMAGIC && magic != SLPZMAGIC) {
+        if (magic != ZMAGIC && magic != SPZMAGIC && magic != SLZMAGIC && magic != SLPZMAGIC) {
                 fprintf(stderr, "BINFMT_ZMAGIC: bad magic/rev (0x%x)\n", magic);
                 return -ENOEXEC;
         }
         int is_lib = magic == SLZMAGIC || magic == SLPZMAGIC;
 
-        DBG_ZM("BINFMT_ZMAGIC: Text segment mapped to %x (len %x)\n",
-               current_tseg_base, text_len);
+        if (*current_tseg_base > MEM_SIZE || text_len > MEM_SIZE - *current_tseg_base)
+                return -ENOEXEC;
+        addr_t data_base = is_lib ? entry_addr : *current_tseg_base + text_len;
+        if (data_base < RX_MAP_START_ADDR || data_base > MEM_SIZE ||
+            data_len > MEM_SIZE - data_base || bss_len > MEM_SIZE - data_base - data_len)
+                return -ENOEXEC;
 
-        textpos = current_tseg_base;
+        DBG_ZM("BINFMT_ZMAGIC: Text segment mapped to %x (len %x)\n",
+               *current_tseg_base, text_len);
+
+        textpos = *current_tseg_base;
         result = target_pread(fd, textpos, text_len, RX_ZM_TEXT_OFFS);
         if (result < 0) {
                 fprintf(stderr, "BINFMT_ZMAGIC: Unable to read process text\n");
                 return result;
         }
-        current_tseg_base += text_len;
+        *current_tseg_base += text_len;
 
         if (data_len) {
                 fpos = RX_ZM_TEXT_OFFS + text_len;
@@ -254,7 +273,7 @@ static int load_zm_file(struct exec_hdr *hdr,
                         }
                 } else {
                         // Real binary: read it to the next spot after last mapping:
-                        datapos = current_tseg_base;
+                        datapos = *current_tseg_base;
                         DBG_ZM("BINFMT_ZMAGIC: Mapping data (%d bytes) from file offset 0x%x "
                                "at end of text seg, 0x%x\n",
                                (int)data_len, (int)fpos, datapos);
@@ -267,8 +286,7 @@ static int load_zm_file(struct exec_hdr *hdr,
                         }
                 }
         }
-        if (bss_len)
-                fprintf(stderr, "BINFMT_ZMAGIC: WARNING: bss_len is non-zero, 0x%x\n", bss_len);
+        memset(mem_base + data_base + data_len, 0, bss_len);
 
         DBG_ZM("BINFMT_ZMAGIC: Text mapped at 0x%x, entry point is 0x%x, data mapped at 0x%x\n",
                (int)textpos, entry_addr, datapos);
@@ -297,7 +315,6 @@ struct libstuff {
         char realpath[PATH_MAX]; // Host path
 };
 
-static struct libstuff libi[MAX_SHARED_LIBS];
 
 
 /* RISCiX binary loading
@@ -346,9 +363,10 @@ int load_zmagic_binary(struct ARMul_State *state, char *filename,
                        int argc, char *argv[],
                        int envc, char *envp[])
 {
-        addr_t                  stack_len;
         addr_t                  start_addr;
-        addr_t                  sp, p;
+        addr_t                  sp;
+        addr_t                  text_end = RX_MAP_START_ADDR;
+        struct libstuff         libi[MAX_SHARED_LIBS];
         int                     res;
         struct exec_hdr         hdr;
         int                     fd;
@@ -365,35 +383,26 @@ int load_zmagic_binary(struct ARMul_State *state, char *filename,
 
         sp = RX_MAP_DATA_ADDR + RX_MAP_DATA_LEN;
 
-        if (get_hdr(filename, realpath, &hdr, 0 /* Linux path */) < 0) {
-                fprintf(stderr, "Can't open %s\n", filename);
-                return -1;
-        }
+        res = get_hdr(filename, realpath, &hdr, 0 /* Linux path */);
+        if (res < 0) return res;
         uint32_t magic = hdr.a_exec.a_magic;
 
-        /* Assume originally-given binary is shared (could skip lib search if not).
-         * FIXME: Easy to support non-shared binaries, but I haven't run into any
-         * I need.
-         */
-        if (magic != SPZMAGIC) {
-                fprintf(stderr, "BINFMT_ZMAGIC: bad magic/rev (0x%x, need 0x%x)\n",
-                        magic, (int) SPZMAGIC);
+        if (magic != SPZMAGIC && magic != ZMAGIC) {
+                fprintf(stderr, "BINFMT_ZMAGIC: unsupported magic/rev (0x%x)\n", magic);
                 return -ENOEXEC;
         }
-        DBG_ZM("BINFMT_ZMAGIC: Uses shared lib %s\n", hdr.a_shlibname);
-
         unsigned int lnum = 0;
         /* Follow library chain:
          * (if) Initial binary is SPZMAGIC, follow path to lib.
          * If lib is SLPZMAGIC, follow path to next lib, else
          * if lib is SLZMAGIC it's the last one (likely libc), loaded first.
          */
-        char *new_lib = hdr.a_shlibname;
-        do {
+        char *new_lib = magic == SPZMAGIC ? hdr.a_shlibname : NULL;
+        while (new_lib) {
                 strncpy(libi[lnum].path, new_lib, PATH_MAX);
 
-                if (get_hdr(libi[lnum].path, libi[lnum].realpath, &libi[lnum].hdr, 1) < 0)
-                        return -1;
+                res = get_hdr(libi[lnum].path, libi[lnum].realpath, &libi[lnum].hdr, 1);
+                if (res < 0) return res;
 
                 uint32_t lmagic = libi[lnum].hdr.a_exec.a_magic;
                 if (lmagic == SLZMAGIC) {
@@ -405,14 +414,14 @@ int load_zmagic_binary(struct ARMul_State *state, char *filename,
                 } else {
                         fprintf(stderr, "BINFMT_ZMAGIC: Unrecognised magic 0x%x in library %s\n",
                                 lmagic, new_lib);
-                        return -1;
+                        return -ENOEXEC;
                 }
                 lnum++;
-                if (lnum == (MAX_SHARED_LIBS-1) && new_lib) {
+                if (lnum == MAX_SHARED_LIBS && new_lib) {
                         fprintf(stderr, "BINFMT_ZMAGIC: Too many libs, increase max?\n");
-                        return -1;
+                        return -ENOEXEC;
                 }
-        } while (new_lib != 0);
+        }
 
         // Now, load libs in reverse order from bottom up:
         for (int i = lnum-1; i >= 0; i--) {
@@ -420,11 +429,10 @@ int load_zmagic_binary(struct ARMul_State *state, char *filename,
 
                 fd = open(libi[i].realpath, O_RDONLY);
                 if (fd < 0) {
-                        perror("BINFMT_ZMAGIC: Library open:");
-                        return fd;
+                        return -errno;
                 }
                 addr_t data_addr = ~0;
-                res = load_zm_file(&libi[i].hdr, fd, libi[i].path, &data_addr);
+                res = load_zm_file(&libi[i].hdr, fd, libi[i].path, &text_end, &data_addr);
                 close(fd);
                 if (res < 0) {
                         return res;
@@ -437,14 +445,23 @@ int load_zmagic_binary(struct ARMul_State *state, char *filename,
         // Finally, load the initial binary
         fd = open(filename, O_RDONLY);
         if (fd < 0) {
-                perror("BINFMT_ZMAGIC: Main binary open:");
-                return fd;
+                return -errno;
         }
-        res = load_zm_file(&hdr, fd, filename, &start_addr);
+        res = load_zm_file(&hdr, fd, filename, &text_end, &start_addr);
         close(fd);
         if (res < 0) {
                 return res;
         }
+
+        if (start_addr < RX_MAP_START_ADDR || start_addr >= text_end || (start_addr & 3))
+                return -ENOEXEC;
+        size_t stack_size = 12 + ((size_t)argc + envc) * 4;
+        for (int i = 0; i < argc; i++) stack_size += strlen(argv[i]) + 1;
+        for (int i = 0; i < envc; i++) stack_size += strlen(envp[i]) + 1;
+        addr_t image_end = text_end + hdr.a_exec.a_data + hdr.a_exec.a_bss;
+        if (sp < image_end) return -ENOEXEC;
+        if (stack_size > RIX_ARG_MAX || stack_size + 3 > sp - image_end)
+                return -E2BIG;
 
         /* Now set up initial stack contents -- args and environment strings. */
         DBG_ZM("BINFMT_ZMAGIC: Stack top 0x%x\n", sp);
