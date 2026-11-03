@@ -44,58 +44,78 @@ Main options:
 ```
 
 This tool can compile and link a simple helloworld.c into a working binary.
-C345's automatic link step runs the guest shell and linker. Provide
-`usr/lib/cc`, `usr/bin/sh`, `sbin/sh` and `usr/bin/ld` beneath
-`RIX_ROOT`, then compile from your working directory:
+C345's automatic link step runs the guest shell and linker. The installation
+under `RIX_ROOT` must contain `usr/lib/cc`, `usr/bin/sh`, `sbin/sh`,
+`usr/bin/ld`, headers and shared libraries.
 
+Save this program as `hello.c` in your working directory:
+
+```c
+#include <stdio.h>
+
+int main(void)
+{
+    puts("Hello world!");
+    return 0;
+}
 ```
-$ rixrun "$RIX_ROOT/usr/lib/cc" hello.c -o hello
-$ rixrun ./hello
+
+Compile and run it with `rixrun` on your `PATH`:
+
+```sh
+rixrun "$RIX_ROOT/usr/lib/cc" hello.c -o hello
+rixrun ./hello
+```
+
+Expected output:
+
+```text
 Hello world!
 ```
 
-Headers and libraries use the installation beneath `RIX_ROOT`; source and
-output files use the working directory. The BSD/X/Open frontend options also
-need `usr/bin/symrename`.
+Default headers and libraries come from the installation under `RIX_ROOT`.
+Relative source and output filenames use the working directory. The BSD and
+X/Open frontend modes also require `usr/bin/symrename`.
 
 ## Limitations
 
 Many!  Only a handful of very simple syscalls are implemented so far:
 
-   * Terminal ioctls are unsupported and return `ENOTTY`; interactive terminal use is unsupported
+   * No terminal control: unsupported ioctls return `ENOTTY` for valid descriptors
    * No networking
    * Guest signal handlers and job control are not implemented
    * Old executable formats such as OMAGIC, NMAGIC and IMAGIC are unsupported
 
-Experimental `fork`, `vfork`, `execve` and wait support uses one host process
-per guest. `vfork` provides fork semantics, with private child memory and no
-parent suspension. Failed exec leaves the caller intact; successful exec
-preserves the guest PID, children and open descriptors.
+Experimental process support uses one host process per guest process.
+`vfork` provides `fork` semantics: the child has private memory and the parent
+is not suspended. A failed `execve` preserves the caller's image; a successful
+call preserves the guest PID, child mappings and open file descriptors.
 
-Guest PIDs are positive 16-bit IDs local to a process and its direct children.
-They do not provide a global PID namespace. Wait supports a particular child,
-any child and the current host process group, with `WNOHANG` and `WUNTRACED`.
-Resource usage is still reported as zero.
+Guest PIDs are positive signed 16-bit IDs, local to a process and its direct
+children. They are not globally unique. `waitpid` supports waiting for a
+particular child, any child or children in the current host process group,
+with `WNOHANG` and `WUNTRACED`. Resource-usage data is reported as zero.
 
-See [the process implementation notes](docs/fork-experimental.md) for the plan,
-ABI details, corner cases and validation. Run `make check` for self-contained
-ARM26 process tests; no RISCiX installation is needed.
+See [the process implementation notes](docs/fork-experimental.md) for ABI
+details, limitations and validation results. Run `make check` for the
+self-contained process and squeeze checks; these need no RISCiX installation.
 
 
 ## Usage
 
 ### Environment variables
 
-`RIX_ROOT` indicates the host path to a RISCiX installation. It locates shared
-libraries and prefixes absolute filenames passed to guest `execve`, so that
-`/usr/bin/ld` executes `$RIX_ROOT/usr/bin/ld`. Those executables must be
-readable and have execute permission; host executables are not run as a fallback.
+`RIX_ROOT` is the host path to a RISCiX installation. When set, it locates
+shared libraries and prefixes absolute filenames passed to guest `execve`:
+`/usr/bin/ld` resolves to `$RIX_ROOT/usr/bin/ld`. The executable must be
+readable and have execute permission. Loading a host executable as a fallback
+is unsupported.
 
-Guest file operations resolve paths beneath `/usr/lib` and `/usr/include`
-inside `RIX_ROOT` too. This includes the compiler's default headers, startup
-object, libraries and symbol-renaming tables. Other file paths, relative exec
-filenames and the initial command-line filename use host paths. This is not a
-chroot.
+Guest file operations also resolve `/usr/lib`, `/usr/include` and their
+contents under `RIX_ROOT`. This locates the compiler's default headers,
+startup object, libraries and symbol-renaming tables. Other file paths,
+relative `execve` filenames and the initial command-line filename use host
+paths. These rules do not provide chroot isolation.
 
 `RIX_VERBOSE` can be set to `1` or `2` for increasing debug output:  syscall
 trace and instruction execution trace.
@@ -103,12 +123,14 @@ trace and instruction execution trace.
 
 ### Squeezedness
 
-RISCiX binaries are usually squeezed to save disk blocks. Rixrun decodes their
-text and data directly into guest memory, both at startup and after `execve`.
-The source files stay unchanged; you do not need to run `unsqueeze` first.
+RISCiX binaries are usually squeezed to save disk blocks. Rixrun decodes
+their text and data directly into guest memory at startup and during
+`execve`. Input executables remain unchanged; running `unsqueeze` first is
+unnecessary.
 
-Loading is eager, rather than demand-paged as in RISCiX. Dictionary and page
-bounds, stream lengths and checksums are validated; invalid images fail to load.
+Rixrun decodes the whole image before execution; RISCiX decodes pages on demand.
+The loader validates dictionary and page bounds, stream lengths and checksums,
+and rejects invalid images.
 See [the squeeze format notes](docs/squeezed-binaries.md) for details.
 
 
