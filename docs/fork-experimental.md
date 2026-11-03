@@ -70,7 +70,8 @@ process per guest process. Keep the existing ARMulator and flat memory model.
   overflowing segments and exhausted guest PID slots with guest errors.
 - The loader still has the project's existing host-endian assumptions and
   limited executable-format support. Process support does not add shebangs,
-  executable decompression, a chroot, or host-command fallback.
+  a chroot, or host-command fallback. Squeezed-image loading is described in
+  [the squeeze format notes](squeezed-binaries.md).
 - Path remapping recognises complete /usr/lib and /usr/include components;
   names such as /usr/library retain their host meaning. All supported pathname
   syscalls use the same policy, including create, link, unlink and chmod.
@@ -90,7 +91,7 @@ usage pointer in r1. The getppid wrapper uses getpid syscall 20's r1 result.
 Tests generate small unsqueezed executables and a shared-library fixture;
 they need Python 3 and a host C compiler, but no RISCiX distribution or ARM
 toolchain. Run make check. Real compiler/linker validation additionally needs
-unsqueezed RISCiX tools and libraries.
+a RISCiX installation.
 
 All 24 process tests pass with GCC at -O3 and Clang at -O2 with AddressSanitizer
 and UndefinedBehaviorSanitizer. An additional native-handler probe checked
@@ -102,10 +103,10 @@ The test in tests/norcroft-fork.c alternates fork and vfork for 32 child
 processes. Each child checks a failed exec and then runs the original linker.
 The parent checks memory isolation, child status and ECHILD after reaping.
 
-With unsqueezed tools, set RIX_CC, RIX_LD and RIX_SYMRENAME to their host
+Set RIX_CC, RIX_LD and RIX_SYMRENAME to their host
 filenames, RIX_INCLUDE and RIX_LIB to the installation's include and library
 directories, and RIXRUN to the absolute path of this checkout's executable.
-Prepare an RIX_ROOT containing the shared libraries and an unsqueezed
+Prepare an RIX_ROOT containing the shared libraries and
 usr/bin/ld. In a separate writable build directory, compile a small input
 program, then compile and run the harness:
 
@@ -134,7 +135,7 @@ hits syscall 76; that is a pre-existing library-placement issue.
 ## C345 automatic compile-and-link validation
 
 C345's automatic link command invokes /usr/bin/sh, which then execs /sbin/sh.
-After unsqueezing, /sbin/sh has static ZMAGIC (0x10b). Static loading skips
+The base format of /sbin/sh is static ZMAGIC (0x10b). Static loading skips
 shared-library traversal and uses the existing segment and stack layout.
 ARM STM must save the instruction address plus 12 so the shell's setjmp can
 recognise the caller prologue; that correction is a separate CPU commit.

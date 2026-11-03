@@ -5,7 +5,7 @@ v0.1 19 Feb 2022
 
 Run Acorn RISCiX binaries from the comfort of your own laptop!
 This program is a simple userspace instruction/syscall emulator that
-can run _unsqueezed_ RISCiX ZMAGIC and SPZMAGIC binaries.
+can run RISCiX ZMAGIC and SPZMAGIC binaries, including squeezed images.
 
 It uses ARMulator to run arm26 code, and with some shockingly-simple
 SWI syscall emulation it's able to run some basic programs.
@@ -44,8 +44,8 @@ Main options:
 ```
 
 This tool can compile and link a simple helloworld.c into a working binary.
-C345's automatic link step runs the guest shell and linker. Prepare unsqueezed
-copies of `usr/lib/cc`, `usr/bin/sh`, `sbin/sh` and `usr/bin/ld` beneath
+C345's automatic link step runs the guest shell and linker. Provide
+`usr/lib/cc`, `usr/bin/sh`, `sbin/sh` and `usr/bin/ld` beneath
 `RIX_ROOT`, then compile from your working directory:
 
 ```
@@ -56,7 +56,7 @@ Hello world!
 
 Headers and libraries use the installation beneath `RIX_ROOT`; source and
 output files use the working directory. The BSD/X/Open frontend options also
-need an unsqueezed `usr/bin/symrename`.
+need `usr/bin/symrename`.
 
 ## Limitations
 
@@ -65,7 +65,7 @@ Many!  Only a handful of very simple syscalls are implemented so far:
    * Terminal ioctls are unsupported and return `ENOTTY`; interactive terminal use is unsupported
    * No networking
    * Guest signal handlers and job control are not implemented
-   * Only unsqueezed ZMAGIC and SPZMAGIC executables are supported, including after exec
+   * Old executable formats such as OMAGIC, NMAGIC and IMAGIC are unsupported
 
 Experimental `fork`, `vfork`, `execve` and wait support uses one host process
 per guest. `vfork` provides fork semantics, with private child memory and no
@@ -89,7 +89,7 @@ ARM26 process tests; no RISCiX installation is needed.
 `RIX_ROOT` indicates the host path to a RISCiX installation. It locates shared
 libraries and prefixes absolute filenames passed to guest `execve`, so that
 `/usr/bin/ld` executes `$RIX_ROOT/usr/bin/ld`. Those executables must be
-unsqueezed and have execute permission; host executables are not run as a fallback.
+readable and have execute permission; host executables are not run as a fallback.
 
 Guest file operations resolve paths beneath `/usr/lib` and `/usr/include`
 inside `RIX_ROOT` too. This includes the compiler's default headers, startup
@@ -103,16 +103,13 @@ trace and instruction execution trace.
 
 ### Squeezedness
 
-RISCiX binaries are by default squeezed.  (If you haven't already, go read about their novel
-on-demand executable decompression, it's really cool!)  AFAIK the algorithm isn't documented anwhere, and I haven't reverse-engineered the algorithm for this,
-so the current ZMAGIC loader can only load unsqueezed binaries.
+RISCiX binaries are usually squeezed to save disk blocks. Rixrun decodes their
+text and data directly into guest memory, both at startup and after `execve`.
+The source files stay unchanged; you do not need to run `unsqueeze` first.
 
-As a workaround, this tool can execute an already-unsqueezed `unsqueeze` binary, in order to
-prepare any given binary for execution.  Solve the chicken & egg by unsqueezing `unsqueeze` from RISCiX itself.
-
-`unsqueeze` writes to a temporary file and then invokes a guest shell and `cp`
-to move the output. Its final copy step needs a runnable guest `cp`. If that
-step fails, copy the temporary output to the right place manually.
+Loading is eager, rather than demand-paged as in RISCiX. Dictionary and page
+bounds, stream lengths and checksums are validated; invalid images fail to load.
+See [the squeeze format notes](docs/squeezed-binaries.md) for details.
 
 
 # Licence

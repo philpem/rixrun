@@ -1,7 +1,7 @@
 /* rixrun main
  *
  * Rixrun is a trivialish RISCiX userspace emulator, able to run
- * unsqueezed demand-paged RISCiX binaries.
+ * demand-paged RISCiX binaries, including squeezed images.
  *
  * The intended scope is very small; just enough to run the development
  * tools on a Linux box!  It won't come close to running X applications

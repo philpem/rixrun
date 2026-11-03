@@ -46,6 +46,7 @@
 #include "rixrun.h"
 #include "rix_os.h"
 #include "zload.h"
+#include "squeeze.h"
 
 
 #define DEBUG
@@ -226,7 +227,7 @@ static int load_zm_file(struct exec_hdr *hdr,
         text_len  = hdr->a_exec.a_text; // FIXME LE!
         data_len  = hdr->a_exec.a_data;
         bss_len   = hdr->a_exec.a_bss;
-        magic     = hdr->a_exec.a_magic;
+        magic     = hdr->a_exec.a_magic & ~MF_SQUEEZED;
         entry_addr = hdr->a_exec.a_entry;   // OR data addr for a lib!
 
         DBG_ZM("BINFMT_ZMAGIC: Loading file: %s\n", filename);
@@ -248,14 +249,18 @@ static int load_zm_file(struct exec_hdr *hdr,
                *current_tseg_base, text_len);
 
         textpos = *current_tseg_base;
-        result = target_pread(fd, textpos, text_len, RX_ZM_TEXT_OFFS);
+        datapos = data_base;
+        if (hdr->a_exec.a_magic & MF_SQUEEZED)
+                result = load_squeezed_segments(fd, hdr, mem_base + textpos, mem_base + data_base);
+        else
+                result = target_pread(fd, textpos, text_len, RX_ZM_TEXT_OFFS);
         if (result < 0) {
-                fprintf(stderr, "BINFMT_ZMAGIC: Unable to read process text\n");
+                fprintf(stderr, "BINFMT_ZMAGIC: Unable to load process segments\n");
                 return result;
         }
         *current_tseg_base += text_len;
 
-        if (data_len) {
+        if (data_len && !(hdr->a_exec.a_magic & MF_SQUEEZED)) {
                 fpos = RX_ZM_TEXT_OFFS + text_len;
 
                 if (is_lib) {
@@ -273,7 +278,6 @@ static int load_zm_file(struct exec_hdr *hdr,
                         }
                 } else {
                         // Real binary: read it to the next spot after last mapping:
-                        datapos = *current_tseg_base;
                         DBG_ZM("BINFMT_ZMAGIC: Mapping data (%d bytes) from file offset 0x%x "
                                "at end of text seg, 0x%x\n",
                                (int)data_len, (int)fpos, datapos);
@@ -385,7 +389,7 @@ int load_zmagic_binary(struct ARMul_State *state, char *filename,
 
         res = get_hdr(filename, realpath, &hdr, 0 /* Linux path */);
         if (res < 0) return res;
-        uint32_t magic = hdr.a_exec.a_magic;
+        uint32_t magic = hdr.a_exec.a_magic & ~MF_SQUEEZED;
 
         if (magic != SPZMAGIC && magic != ZMAGIC) {
                 fprintf(stderr, "BINFMT_ZMAGIC: unsupported magic/rev (0x%x)\n", magic);
@@ -404,7 +408,7 @@ int load_zmagic_binary(struct ARMul_State *state, char *filename,
                 res = get_hdr(libi[lnum].path, libi[lnum].realpath, &libi[lnum].hdr, 1);
                 if (res < 0) return res;
 
-                uint32_t lmagic = libi[lnum].hdr.a_exec.a_magic;
+                uint32_t lmagic = libi[lnum].hdr.a_exec.a_magic & ~MF_SQUEEZED;
                 if (lmagic == SLZMAGIC) {
                         DBG_ZM("BINFMT_ZMAGIC: Reached final lib\n");
                         new_lib = 0;

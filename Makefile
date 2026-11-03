@@ -28,6 +28,7 @@ RR_SOURCES = main.c
 RR_SOURCES += os.c
 RR_SOURCES += utils.c
 RR_SOURCES += zload.c
+RR_SOURCES += squeeze.c
 
 SOURCES = $(ARMULATOR_SOURCES) $(RR_SOURCES)
 
@@ -41,6 +42,7 @@ rixrun:	$(SOURCES) $(wildcard *.h armulator/*.h)
 
 check:	rixrun
 	python3 tests/process.py ./rixrun
+	python3 tests/squeeze.py ./rixrun
 
 .PHONY: all check clean
 

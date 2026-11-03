@@ -56,10 +56,9 @@ struct exec_hdr {
         char                    a_shlibname[60];        /* Path to shared lib */
 };
 
-/* We don't support old binary formats (like IMAGIC/OMAGIC/NMAGIC),
- * and don't support any squeezed binaries.  (Unsqueeze them first!)
- */
+/* Old binary formats such as IMAGIC/OMAGIC/NMAGIC are not supported. */
 #define ZMAGIC          0413
+#define MF_SQUEEZED     01000
 #define MF_USES_SL      02000
 #define MF_IS_SL        04000
 #define SPZMAGIC        (MF_USES_SL|ZMAGIC)     /* Consumes shared library */
