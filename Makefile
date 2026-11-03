@@ -43,6 +43,7 @@ rixrun:	$(SOURCES) $(wildcard *.h armulator/*.h)
 check:	rixrun
 	python3 tests/process.py ./rixrun
 	python3 tests/squeeze.py ./rixrun
+	python3 tests/sdk_syscalls.py "$(CURDIR)/rixrun"
 
 .PHONY: all check clean
 

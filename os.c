@@ -95,6 +95,9 @@
 
 static  int     sc_trace = 0;
 
+/* Startup state only: guest signal delivery is not implemented. */
+static uint32_t guest_sigmask;
+static uint32_t guest_sigstack[2];
 static ARMul_State initial_state;
 
 /* RISCiX pid_t is a signed short. IDs are local to a process and its children;
@@ -165,7 +168,9 @@ static void     host_to_rix_stat(struct rix_stat *osb, struct stat *isb)
         osb->st_m_time = htole32(isb->st_mtim.tv_sec);
         osb->st_c_time = htole32(isb->st_ctim.tv_sec);
 #endif
-        osb->st_blksize = htole32(isb->st_blksize);
+        /* RISC iX MAXBSIZE is 8192. st_blksize is an I/O hint:
+         * passing a ZFS 128 KiB hint wraps original tools' short counters. */
+        osb->st_blksize = htole32(isb->st_blksize > 8192 ? 8192 : isb->st_blksize);
 	osb->st_blocks = htole32(isb->st_blocks); // Convert to 4K?
         /* SDBG("Stat %04x %08x %03x %04x %04x %04x %04x\n" */
         /*      "   %08x %08x:%08x:%08x %08x %08x\n", */
@@ -468,6 +473,50 @@ void    rix_sc_getgid(ARMul_State *state)
         SYSTRACE("getgid()");
         ARMul_SetReg(state, state->Mode, 1, getegid());
         SC_RET_VAL("%u", getgid());
+}
+
+/* The non-root RISCiX shell tests supplementary groups before exec.
+ * sys/types.h defines gid_t as unsigned short; host gid_t is not its ABI.
+ */
+void    rix_sc_getgroups(ARMul_State *state)
+{
+        SC_2ARG;
+        SYSTRACE("getgroups(%d, %08x)", (int32_t)a0, a1);
+        int n = getgroups(0, NULL);
+        if (n < 0) {
+                SC_RET_ERROR(host_to_rix_errno(errno));
+                return;
+        }
+        if ((int32_t)a0 < 0 || (a0 && a0 < (unsigned int)n)) {
+                SC_RET_ERROR(EINVAL);
+                return;
+        }
+        if (!a0 || !n) {
+                SC_RET_VAL("%d", n);
+                return;
+        }
+        if (!a1 || !guest_range(a1, (size_t)n * 2)) {
+                SC_RET_ERROR(EFAULT);
+                return;
+        }
+        gid_t *groups = calloc(n, sizeof(*groups));
+        if (!groups) {
+                SC_RET_ERROR(ENOMEM);
+                return;
+        }
+        int r = getgroups(n, groups);
+        if (r >= 0) {
+                for (int i = 0; i < r; i++)
+                        if (groups[i] > UINT16_MAX) { r = -1; errno = EINVAL; break; }
+                if (r >= 0) for (int i = 0; i < r; i++) {
+                        uint16_t value = htole16((uint16_t)groups[i]);
+                        memcpy(mem_base + a1 + i * 2, &value, 2);
+                }
+        }
+        int error = errno;
+        free(groups);
+        if (r < 0) SC_RET_ERROR(host_to_rix_errno(error));
+        else SC_RET_VAL("%d", r);
 }
 
 void    rix_sc_open(ARMul_State *state)
@@ -791,6 +840,26 @@ unsigned int    ARMul_OSHandleSWI(ARMul_State *state, ARMword number)
         case 19:        /* lseek        */      rix_sc_lseek(state);            break;
         case 20:        /* getpid       */      rix_sc_getpid(state);           break;
         case 24:        /* getuid       */      rix_sc_getuid(state);           break;
+        case 92: { /* fcntl: descriptor commands only */
+            SC_3ARG;
+            int commands[] = {F_DUPFD, F_GETFD, F_SETFD};
+            if (a1 == 3) {
+                int flags = fcntl((int)a0, F_GETFL);
+                if (flags < 0) { SC_RET_ERROR(host_to_rix_errno(errno)); break; }
+                int result = flags & O_ACCMODE;
+                if (flags & O_APPEND) result |= 1 << 3;
+                if (flags & O_NONBLOCK) result |= (1 << 2) | (1 << 14);
+                if (flags & O_ASYNC) result |= 1 << 6;
+                if (flags & O_SYNC) result |= 1 << 13;
+                SC_RET_VAL("%d", result);
+                break;
+            }
+            if (a1 > 2) { SC_RET_ERROR(22); break; }
+            int result = fcntl((int)a0, commands[a1], (int)a2);
+            if (result < 0) SC_RET_ERROR(host_to_rix_errno(errno));
+            else SC_RET_VAL("%d", result);
+            break;
+        }
         case 28:        /* open         */      rix_sc_open(state);             break;
         case 34:        /* access       */      rix_sc_access(state);           break;
         case 39:        /* stat         */      rix_sc_stat(state);             break;
@@ -801,12 +870,43 @@ unsigned int    ARMul_OSHandleSWI(ARMul_State *state, ARMword number)
         case 62:        /* fstat        */      rix_sc_fstat(state);            break;
         case 64:        /* getpagesize  */      rix_sc_getpagesize(state);      break;
         case 66:        /* vfork        */      rix_sc_fork(state);             break;
+        case 77:        /* getgroups    */      rix_sc_getgroups(state);        break;
         case 84:        /* wait         */      rix_sc_wait(state);             break;
         case 89:        /* getdtablesize*/      rix_sc_getdtablesize(state);    break;
         case 108:       /* sigvec       */      rix_sc_NOP(state, "sigvec");    break;
-        case 109:       /* sigblock     */      rix_sc_NOP(state, "sigblock");  break;
-        case 110:       /* sigsetmask   */      rix_sc_NOP(state, "sigsetmask");break;
-        case 112:       /* sigstack     */      rix_sc_NOP(state, "sigstack");  break;
+        case 109: {
+            SC_1ARG;
+            uint32_t old = guest_sigmask;
+            guest_sigmask |= a0;
+            SC_RET_VAL("%u", old);
+            break;
+        }
+        case 110: {
+            SC_1ARG;
+            uint32_t old = guest_sigmask;
+            guest_sigmask = a0;
+            SC_RET_VAL("%u", old);
+            break;
+        }
+        case 112: {
+            SC_2ARG;
+            if ((a0 && !guest_range(a0, 8)) || (a1 && !guest_range(a1, 8))) {
+                SC_RET_ERROR(14);
+                break;
+            }
+            uint32_t next_sp = a0 ? read32(a0) : 0;
+            uint32_t next_onstack = a0 ? read32(a0 + 4) : 0;
+            if (a1) {
+                write32(a1, guest_sigstack[0]);
+                write32(a1 + 4, guest_sigstack[1]);
+            }
+            if (a0) {
+                guest_sigstack[0] = next_sp;
+                guest_sigstack[1] = next_onstack;
+            }
+            SC_RET_VAL("%d", 0);
+            break;
+        }
         case 116:       /* gettimeofday */      rix_sc_gettimeofday(state);     break;
         case 117:       /* getrusage    */      rix_sc_getrusage(state);        break;
         case 130:       /* ftruncate    */      rix_sc_ftruncate(state);        break;

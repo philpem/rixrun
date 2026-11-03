@@ -98,7 +98,17 @@ with `WNOHANG` and `WUNTRACED`. Resource-usage data is reported as zero.
 
 See [the process implementation notes](docs/fork-experimental.md) for ABI
 details, limitations and validation results. Run `make check` for the
-self-contained process and squeeze checks; these need no RISCiX installation.
+self-contained process, squeeze and native-tool syscall checks; these need no
+RISCiX installation.
+
+Native-tool support includes `fcntl` descriptor commands (`F_DUPFD`, `F_GETFD`,
+`F_SETFD` and `F_GETFL`), stored guest signal masks and alternate-stack state,
+and `getgroups` with the original 16-bit little-endian group-ID ABI. Signal
+state supports assembler and shell startup; guest signal delivery remains
+unimplemented. Host supplementary group IDs above 65535 return `EINVAL`.
+The `stat`/`fstat` block-size hint is capped at the RISC iX `MAXBSIZE` of 8192
+bytes: larger host hints, such as ZFS's 128 KiB, wrap short counters in the
+original native linker.
 
 
 ## Usage
